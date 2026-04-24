@@ -1,0 +1,22 @@
+cat > .gitignore << 'EOF'
+# Secrets — never commit
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Runtime outputs
+evaluation_history.json
+evaluation_results.json
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+EOF
