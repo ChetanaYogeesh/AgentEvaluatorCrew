@@ -1,0 +1,232 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ─────────────────────────────────────────
+  # 1. Lint & Format Check
+  # ─────────────────────────────────────────
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint dependencies
+        run: pip install ruff
+
+      - name: Run ruff (lint)
+        run: ruff check .
+
+      - name: Run ruff (format check)
+        run: ruff format --check .
+
+  # ─────────────────────────────────────────
+  # 2. Unit Tests (no API keys needed)
+  # ─────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create config directory
+        run: |
+          mkdir -p config
+          cp agents.yaml config/agents.yaml || true
+          cp tasks.yaml config/tasks.yaml   || true
+
+      - name: Run unit tests
+        run: |
+          pytest tests/test_tools.py -v \
+            --tb=short \
+            --junitxml=reports/unit-test-results.xml \
+            --cov=tools \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: reports/
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: reports/coverage.xml
+          fail_ci_if_error: false
+
+  # ─────────────────────────────────────────
+  # 3. Integration Tests (requires secrets)
+  # ─────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    # Only run on pushes to main (not on every PR to save API costs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create config directory
+        run: |
+          mkdir -p config
+          cp agents.yaml config/agents.yaml
+          cp tasks.yaml config/tasks.yaml
+
+      - name: Run integration tests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          pytest tests/test_integration.py -v \
+            -m integration \
+            --tb=short \
+            --junitxml=reports/integration-test-results.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: reports/
+
+  # ─────────────────────────────────────────
+  # 4. Validate Config Files
+  # ─────────────────────────────────────────
+  validate-configs:
+    name: Validate YAML Configs
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate agents.yaml
+        run: python -c "import yaml; yaml.safe_load(open('agents.yaml'))"
+
+      - name: Validate tasks.yaml
+        run: python -c "import yaml; yaml.safe_load(open('tasks.yaml'))"
+
+      - name: Check required agent keys
+        run: |
+          python - <<'EOF'
+          import yaml, sys
+          REQUIRED_AGENTS = [
+            "evaluator_coordinator", "trace_analyst", "quality_judge",
+            "safety_judge", "cost_latency_analyst", "regression_monitor"
+          ]
+          REQUIRED_TASKS = [
+            "coordinate_evaluation", "analyze_trace", "judge_quality",
+            "judge_safety", "analyze_cost_latency", "monitor_regression"
+          ]
+          agents = yaml.safe_load(open("agents.yaml"))
+          tasks  = yaml.safe_load(open("tasks.yaml"))
+          missing_agents = [a for a in REQUIRED_AGENTS if a not in agents]
+          missing_tasks  = [t for t in REQUIRED_TASKS  if t not in tasks]
+          if missing_agents:
+            print(f"❌ Missing agents: {missing_agents}"); sys.exit(1)
+          if missing_tasks:
+            print(f"❌ Missing tasks: {missing_tasks}");  sys.exit(1)
+          print("✅ All required agents and tasks present")
+          EOF
+
+  # ─────────────────────────────────────────
+  # 5. Security Scan
+  # ─────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run bandit security scan
+        run: |
+          bandit -r . \
+            --exclude ./.git,./tests,./reports \
+            -ll \
+            -f json \
+            -o reports/bandit-report.json || true
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: reports/bandit-report.json
+
+  # ─────────────────────────────────────────
+  # 6. Build Summary
+  # ─────────────────────────────────────────
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, validate-configs, security]
+    if: always()
+
+    steps:
+      - name: Check all required jobs passed
+        run: |
+          if [[ "${{ needs.lint.result }}"             != "success" ||
+                "${{ needs.unit-tests.result }}"       != "success" ||
+                "${{ needs.validate-configs.result }}" != "success" ]]; then
+            echo "❌ One or more required CI jobs failed."
+            exit 1
+          fi
+          echo "✅ All required CI jobs passed."
