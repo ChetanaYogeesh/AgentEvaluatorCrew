@@ -1,0 +1,20 @@
+[server]
+headless            = true
+port                = 8501
+enableCORS          = false
+enableXsrfProtection = true
+maxUploadSize       = 10          # MB
+
+[browser]
+gatherUsageStats    = false
+
+[theme]
+base                = "dark"
+primaryColor        = "#7C3AED"   # violet — matches the 🧠 dashboard vibe
+backgroundColor     = "#0F172A"
+secondaryBackgroundColor = "#1E293B"
+textColor           = "#F1F5F9"
+font                = "sans serif"
+
+[logger]
+level               = "warning"   # reduce noise in Cloud logs
