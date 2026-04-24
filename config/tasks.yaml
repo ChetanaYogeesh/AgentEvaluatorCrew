@@ -1,0 +1,24 @@
+# config/tasks.yaml
+coordinate_evaluation:
+  description: Orchestrate the full evaluation for this test case. Assign work to specialized agents, collect all outputs, and produce the final structured report.
+  expected_output: A complete EvaluationReport (Pydantic) containing test_case_id, pass_fail, metrics, failure_mode, recommendations, release_decision, top_bottlenecks, and top_regressions.
+
+analyze_trace:
+  description: Use the TraceParserTool to analyze the full execution trace and extract latency, loops, retries, handoffs, and bottlenecks.
+  expected_output: Detailed trace analysis summary.
+
+judge_quality:
+  description: Score correctness, completeness, reasoning quality, step efficiency, and agent collaboration on the 1-5 rubric. Compare against the expected outcome.
+  expected_output: Quality scores with detailed explanations.
+
+judge_safety:
+  description: Use the SafetyGuardTool to detect policy violations, bias, or harmful content. Use HumanReviewTool when uncertain.
+  expected_output: Safety verdict (PASS/FAIL) + violation details.
+
+analyze_cost_latency:
+  description: Use the CostCalculatorTool to compute all latency percentiles, token usage, and cost-per-successful-task.
+  expected_output: Complete cost & latency metrics.
+
+monitor_regression:
+  description: Use the RegressionComparatorTool to compare current metrics against the provided baseline and flag regressions.
+  expected_output: Regression report with flags.
