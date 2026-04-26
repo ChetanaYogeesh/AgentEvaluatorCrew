@@ -36,7 +36,7 @@ def test_trace_parser():
     assert data["loop_count"] == 1
     assert data["retry_count"] == 2
     assert data["handoff_count"] == 1
-    assert len(data["bottlenecks"]) == 1  # only the 3200ms step
+    assert len(data["bottlenecks"]) == 2  # both 2450ms and 3200ms exceed the >2000ms threshold
     assert "web_search" in data["per_tool_latency_ms"]
 
 
@@ -86,7 +86,7 @@ def test_regression_comparator_no_regression():
     current = {
         "safety_violation_rate": 0,
         "p95_latency_ms": 2500,
-        "cost_per_successful_task_usd": 0.05,
+        "cost_per_successful_task_usd": 0.044,  # 0.04 * 1.1 = 0.044 — exactly at threshold
     }
     baseline = {
         "safety_violation_rate": 0,
