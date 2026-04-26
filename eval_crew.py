@@ -1,59 +1,119 @@
-from crewai import Agent, Task, Crew, Process, Flow
-from crewai.flow import start, listen
-from pydantic import BaseModel
 import json
-from typing import Dict, Any, List
 import os
+import traceback
+from typing import Any
+
+import litellm
+import yaml
+from crewai import Agent, Crew, Process, Task
+from dotenv import load_dotenv
+from pydantic import BaseModel
+
+load_dotenv()
+
 
 # ====================== Pydantic Output Model ======================
 class EvaluationReport(BaseModel):
     test_case_id: str
     pass_fail: str
-    metrics: Dict[str, Any]
+    metrics: dict[str, Any]
     failure_mode: str
-    recommendations: List[str]
+    recommendations: list[str]
     release_decision: str
-    top_bottlenecks: List[str]
-    top_regressions: List[str]
+    top_bottlenecks: list[str]
+    top_regressions: list[str]
 
-# ====================== OpenTelemetry Setup ======================
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
-os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
 
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+print("🚀 Starting Agent Evaluator Crew with Direct LiteLLM...")
 
-trace.set_tracer_provider(TracerProvider())
-trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-print("✅ OpenTelemetry enabled")
+OPENROUTER_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENROUTER_API_KEY:
+    print("❌ ERROR: OPENAI_API_KEY not found in .env!")
+    raise SystemExit(1)
+
+
+def llm_call(messages: list[dict], model: str = "gpt-4o-mini") -> str:
+    """Direct LiteLLM call — bypasses CrewAI's internal LLM wiring."""
+    try:
+        response = litellm.completion(
+            model=f"openrouter/openai/{model}",
+            messages=messages,
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+            temperature=0.0,
+            max_tokens=2000,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"LiteLLM call failed: {e}")
+        raise
+
+
+print("✅ Direct LiteLLM OpenRouter configured")
+
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew for Multi-Agent Systems"""
-
-    def __init__(self):
-        self.agents_config = "config/agents.yaml"
-        self.tasks_config = "config/tasks.yaml"
+    def __init__(self) -> None:
+        with open("config/agents.yaml") as f:
+            self.agents_config = yaml.safe_load(f)
+        with open("config/tasks.yaml") as f:
+            self.tasks_config = yaml.safe_load(f)
 
     def evaluator_coordinator(self) -> Agent:
-        return Agent(config=self.agents_config["evaluator_coordinator"], verbose=True, tools=[MetricCalculatorTool()])
+        return Agent(
+            config=self.agents_config["evaluator_coordinator"],
+            verbose=True,
+            llm_call=llm_call,
+        )
 
     def trace_analyst(self) -> Agent:
-        return Agent(config=self.agents_config["trace_analyst"], verbose=True, tools=[TraceParserTool()])
+        from tools import TraceParserTool
+
+        return Agent(
+            config=self.agents_config["trace_analyst"],
+            verbose=True,
+            tools=[TraceParserTool()],
+            llm_call=llm_call,
+        )
 
     def quality_judge(self) -> Agent:
-        return Agent(config=self.agents_config["quality_judge"], verbose=True)
+        return Agent(
+            config=self.agents_config["quality_judge"],
+            verbose=True,
+            llm_call=llm_call,
+        )
 
     def safety_judge(self) -> Agent:
-        return Agent(config=self.agents_config["safety_judge"], verbose=True, tools=[SafetyGuardTool(), HumanReviewTool()])
+        from tools import HumanReviewTool, SafetyGuardTool
+
+        return Agent(
+            config=self.agents_config["safety_judge"],
+            verbose=True,
+            tools=[SafetyGuardTool(), HumanReviewTool()],
+            llm_call=llm_call,
+        )
 
     def cost_latency_analyst(self) -> Agent:
-        return Agent(config=self.agents_config["cost_latency_analyst"], verbose=True, tools=[CostCalculatorTool()])
+        from tools import CostCalculatorTool
+
+        return Agent(
+            config=self.agents_config["cost_latency_analyst"],
+            verbose=True,
+            tools=[CostCalculatorTool()],
+            llm_call=llm_call,
+        )
 
     def regression_monitor(self) -> Agent:
-        return Agent(config=self.agents_config["regression_monitor"], verbose=True, tools=[RegressionComparatorTool()])
+        from tools import RegressionComparatorTool
+
+        return Agent(
+            config=self.agents_config["regression_monitor"],
+            verbose=True,
+            tools=[RegressionComparatorTool()],
+            llm_call=llm_call,
+        )
 
     def analyze_trace(self) -> Task:
         return Task(config=self.tasks_config["analyze_trace"], agent=self.trace_analyst())
@@ -65,17 +125,22 @@ class AgentEvaluatorCrew:
         return Task(config=self.tasks_config["judge_safety"], agent=self.safety_judge())
 
     def analyze_cost_latency(self) -> Task:
-        return Task(config=self.tasks_config["analyze_cost_latency"], agent=self.cost_latency_analyst())
+        return Task(
+            config=self.tasks_config["analyze_cost_latency"], agent=self.cost_latency_analyst()
+        )
 
     def monitor_regression(self) -> Task:
         return Task(config=self.tasks_config["monitor_regression"], agent=self.regression_monitor())
 
     def coordinate_evaluation(self) -> Task:
+        from tools import MetricCalculatorTool
+
         return Task(
             config=self.tasks_config["coordinate_evaluation"],
             agent=self.evaluator_coordinator(),
+            tools=[MetricCalculatorTool()],
             output_pydantic=EvaluationReport,
-            async_execution=False
+            async_execution=False,
         )
 
     def crew(self) -> Crew:
@@ -99,60 +164,56 @@ class AgentEvaluatorCrew:
             process=Process.hierarchical,
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
-            memory=True,
-            enable_otel=True,
-            output_json=True
+            memory=False,
+            output_json=True,
         )
 
 
-# ====================== Flow for Batch Evaluation ======================
-class EvaluationFlow(Flow):
-    @start()
-    def load_batch(self, test_cases: List[Dict]):
-        self.test_cases = test_cases
-        return "Batch loaded"
+# ====================== Run ======================
+if __name__ == "__main__":
+    test_cases = [
+        {
+            "id": "TC-001",
+            "trace": {
+                "steps": [{"name": "research", "latency_ms": 2450}],
+                "loop_count": 0,
+                "retry_count": 1,
+            },
+            "expected": "Paris is the capital of France",
+            "baseline": {"p95_latency_ms": 3000, "safety_violation_rate": 0},
+        }
+    ]
 
-    @listen("load_batch")
-    def run_evaluations(self):
-        crew = AgentEvaluatorCrew().crew()
+    try:
+        crew_obj = AgentEvaluatorCrew()
+        crew = crew_obj.crew()
+        print("✅ Crew created successfully. Running evaluation...")
+
         results = []
-        for case in self.test_cases:
+        for case in test_cases:
             inputs = {
                 "test_case_id": case["id"],
                 "trace": json.dumps(case["trace"]),
                 "expected_outcome": case["expected"],
-                "baseline": json.dumps(case.get("baseline", {}))
+                "baseline": json.dumps(case.get("baseline", {})),
             }
             result = crew.kickoff(inputs=inputs)
             results.append(result)
-        return results
+            print(f"✅ Evaluated {case['id']} → {getattr(result, 'pass_fail', 'UNKNOWN')}")
 
-    @listen("run_evaluations")
-    def finalize_batch(self, results):
         with open("evaluation_results.json", "w") as f:
-            json.dump([r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results], f, indent=2)
-        
-        print("\n" + "="*80)
-        print("BATCH EVALUATION COMPLETE")
-        print("="*80)
-        print(f"Total cases: {len(results)}")
-        passes = sum(1 for r in results if getattr(r, "pass_fail", "FAIL") == "PASS")
-        print(f"Pass rate: {passes / len(results):.1%}")
-        print("📁 Results saved to evaluation_results.json")
+            json.dump(
+                [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results],
+                f,
+                indent=2,
+            )
 
+        print("\n" + "=" * 80)
+        print("✅ SUCCESS! JSON file created")
+        print("📁 evaluation_results.json has been saved")
+        print("=" * 80)
 
-# ====================== Example Batch Runner ======================
-if __name__ == "__main__":
-    print("🚀 Starting Agent Evaluator Crew...")
-
-    test_cases = [
-        {
-            "id": "TC-001",
-            "trace": {"steps": [{"name": "research", "latency_ms": 2450}], "loop_count": 0, "retry_count": 1},
-            "expected": "Paris is the capital of France",
-            "baseline": {"p95_latency_ms": 3000, "safety_violation_rate": 0}
-        }
-    ]
-
-    flow = EvaluationFlow()
-    flow.kickoff(inputs={"test_cases": test_cases})
+    except Exception as e:
+        print("❌ ERROR occurred:")
+        print(e)
+        traceback.print_exc()

@@ -17,6 +17,8 @@ line-length    = 100
 exclude = [
     ".git", ".venv", "venv", "__pycache__", "build", "dist",
     "reports", "*.egg-info",
+    # Archived version history — not production code
+    "eval_crew_v*.py",
 ]
 
 [tool.ruff.lint]
@@ -32,6 +34,10 @@ select = [
 ignore = [
     "E501",  # line-too-long (handled by formatter)
     "B008",  # function calls in default args (common in pydantic)
+    # N999: module name check fires on packages whose *directory* name is
+    # PascalCase (e.g. a repo cloned as AgentEvaluatorCrew/).
+    # Our source files are correctly snake_cased; suppress the false positive.
+    "N999",
 ]
 
 [tool.ruff.lint.isort]

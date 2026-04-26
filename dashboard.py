@@ -1,41 +1,43 @@
 import json
-import streamlit as st
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
-from pathlib import Path
-from datetime import datetime
-import os
+import streamlit as st
 
 st.set_page_config(page_title="Agent Evaluation Dashboard", layout="wide")
 st.title("🧠 Multi-Agent Evaluation Dashboard")
+
 
 # ====================== Load Results (History Support) ======================
 def load_all_results():
     file_path = Path("evaluation_results.json")
     history_path = Path("evaluation_history.json")
-    
+
     results = []
     if file_path.exists():
         try:
-            with open(file_path, "r") as f:
+            with open(file_path) as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 data = [data]
             results.extend(data)
-        except:
+        except Exception:
             pass
-    
+
     # Load historical results
     if history_path.exists():
         try:
-            with open(history_path, "r") as f:
+            with open(history_path) as f:
                 history = json.load(f)
             if isinstance(history, list):
                 results.extend(history)
-        except:
+        except Exception:
             pass
-    
+
     return results
+
 
 results_list = load_all_results()
 
@@ -46,11 +48,18 @@ if not results_list:
 # Sidebar
 st.sidebar.header("📋 Test Cases")
 selected_id = st.sidebar.selectbox(
-    "Select Evaluation", 
-    [f"{r.get('test_case_id', 'Unknown')} - {r.get('timestamp', '')}" for r in results_list]
+    "Select Evaluation",
+    [f"{r.get('test_case_id', 'Unknown')} - {r.get('timestamp', '')}" for r in results_list],
 )
 
-current = next((r for r in results_list if f"{r.get('test_case_id')} - {r.get('timestamp', '')}" == selected_id), results_list[0])
+current = next(
+    (
+        r
+        for r in results_list
+        if f"{r.get('test_case_id')} - {r.get('timestamp', '')}" == selected_id
+    ),
+    results_list[0],
+)
 
 # ====================== Configuration Details ======================
 st.sidebar.header("⚙️ Configuration")
