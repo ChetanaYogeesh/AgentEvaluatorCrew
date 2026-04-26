@@ -28,18 +28,19 @@ print("🚀 Starting Agent Evaluator Crew with Direct LiteLLM...")
 
 OPENROUTER_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not OPENROUTER_API_KEY:
-    print("❌ ERROR: OPENAI_API_KEY not found in .env!")
-    raise SystemExit(1)
-
 
 def llm_call(messages: list[dict], model: str = "gpt-4o-mini") -> str:
     """Direct LiteLLM call — bypasses CrewAI's internal LLM wiring."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Add it to your .env file or export it before running."
+        )
     try:
         response = litellm.completion(
             model=f"openrouter/openai/{model}",
             messages=messages,
-            api_key=OPENROUTER_API_KEY,
+            api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
             temperature=0.0,
             max_tokens=2000,
@@ -171,6 +172,10 @@ class AgentEvaluatorCrew:
 
 # ====================== Run ======================
 if __name__ == "__main__":
+    if not os.getenv("OPENAI_API_KEY"):
+        print("❌ ERROR: OPENAI_API_KEY not found in .env!")
+        raise SystemExit(1)
+
     test_cases = [
         {
             "id": "TC-001",
