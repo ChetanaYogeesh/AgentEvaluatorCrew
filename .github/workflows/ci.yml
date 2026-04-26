@@ -56,9 +56,10 @@ jobs:
 
       - name: Create config directory
         run: |
-          mkdir -p config
-          cp agents.yaml config/agents.yaml || true
-          cp tasks.yaml config/tasks.yaml   || true
+          mkdir -p config reports
+          # YAML configs already live in config/ — verify they exist
+          test -f config/agents.yaml || (echo "❌ config/agents.yaml missing" && exit 1)
+          test -f config/tasks.yaml  || (echo "❌ config/tasks.yaml missing"  && exit 1)
 
       - name: Run unit tests
         run: |
@@ -107,9 +108,9 @@ jobs:
 
       - name: Create config directory
         run: |
-          mkdir -p config
-          cp agents.yaml config/agents.yaml
-          cp tasks.yaml config/tasks.yaml
+          mkdir -p config reports
+          test -f config/agents.yaml || (echo "❌ config/agents.yaml missing" && exit 1)
+          test -f config/tasks.yaml  || (echo "❌ config/tasks.yaml missing"  && exit 1)
 
       - name: Run integration tests
         env:
@@ -148,10 +149,10 @@ jobs:
         run: pip install pyyaml
 
       - name: Validate agents.yaml
-        run: python -c "import yaml; yaml.safe_load(open('agents.yaml'))"
+        run: python -c "import yaml; yaml.safe_load(open('config/agents.yaml'))"
 
       - name: Validate tasks.yaml
-        run: python -c "import yaml; yaml.safe_load(open('tasks.yaml'))"
+        run: python -c "import yaml; yaml.safe_load(open('config/tasks.yaml'))"
 
       - name: Check required agent keys
         run: |
@@ -165,8 +166,8 @@ jobs:
             "coordinate_evaluation", "analyze_trace", "judge_quality",
             "judge_safety", "analyze_cost_latency", "monitor_regression"
           ]
-          agents = yaml.safe_load(open("agents.yaml"))
-          tasks  = yaml.safe_load(open("tasks.yaml"))
+          agents = yaml.safe_load(open("config/agents.yaml"))
+          tasks  = yaml.safe_load(open("config/tasks.yaml"))
           missing_agents = [a for a in REQUIRED_AGENTS if a not in agents]
           missing_tasks  = [t for t in REQUIRED_TASKS  if t not in tasks]
           if missing_agents:
