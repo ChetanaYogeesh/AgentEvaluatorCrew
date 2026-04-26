@@ -58,3 +58,4 @@ def sample_test_case(simple_trace_json, sample_baseline):
         "expected_outcome": "Paris is the capital of France",
         "baseline": json.dumps(sample_baseline),
     }
+    
