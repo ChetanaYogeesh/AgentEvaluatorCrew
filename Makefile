@@ -101,8 +101,8 @@ lint:
 
 .PHONY: format
 format:
-	ruff format .
-	ruff check --fix .
+    ruff check --fix .
+    ruff format .
 
 .PHONY: security
 security:
