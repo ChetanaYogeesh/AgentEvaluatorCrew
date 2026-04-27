@@ -3,18 +3,13 @@ import os
 import traceback
 from typing import Any
 
+import litellm
 import yaml
 from crewai import Agent, Crew, Process, Task
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from tools import (
-    CostCalculatorTool,
-    HumanReviewTool,
-    MetricCalculatorTool,
-    RegressionComparatorTool,
-    SafetyGuardTool,
-    TraceParserTool,
-)
+load_dotenv()
 
 
 # ====================== Pydantic Output Model ======================
@@ -29,26 +24,31 @@ class EvaluationReport(BaseModel):
     top_regressions: list[str]
 
 
-# ====================== OpenRouter Configuration ======================
-if not os.getenv("OPENAI_API_KEY"):
-    print("❌ ERROR: OPENAI_API_KEY is not set!")
-    print("   Export your OpenRouter key: export OPENAI_API_KEY=sk-or-v1-...")
-    raise SystemExit(1)
+print("🚀 Starting Agent Evaluator Crew with OpenRouter...")
 
-print("🚀 Starting Agent Evaluator Crew...")
+OPENROUTER_API_KEY = os.getenv("OPENAI_API_KEY")
 
-OPENROUTER_LLM: dict = {
-    "model": "openai/gpt-4o",
-    "api_key": os.getenv("OPENAI_API_KEY"),
-    "base_url": "https://openrouter.ai/api/v1",
-    "temperature": 0.0,
-}
+
+# Direct LiteLLM call function — moved key check inside so import is safe
+def call_llm(messages: list[dict], model: str = "openai/gpt-4o") -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set. Add it to your .env file.")
+    response = litellm.completion(
+        model=f"openrouter/{model}",
+        messages=messages,
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        temperature=0.0,
+    )
+    return response.choices[0].message.content
+
+
+print("✅ OpenRouter + LiteLLM configured")
 
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew — single OpenRouter model for all agents."""
-
     def __init__(self) -> None:
         with open("config/agents.yaml") as f:
             self.agents_config = yaml.safe_load(f)
@@ -56,50 +56,57 @@ class AgentEvaluatorCrew:
             self.tasks_config = yaml.safe_load(f)
 
     def evaluator_coordinator(self) -> Agent:
-        # Manager agent must NOT have tools in hierarchical process
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def trace_analyst(self) -> Agent:
+        from tools import TraceParserTool
+
         return Agent(
             config=self.agents_config["trace_analyst"],
             verbose=True,
             tools=[TraceParserTool()],
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def quality_judge(self) -> Agent:
         return Agent(
             config=self.agents_config["quality_judge"],
             verbose=True,
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def safety_judge(self) -> Agent:
+        from tools import HumanReviewTool, SafetyGuardTool
+
         return Agent(
             config=self.agents_config["safety_judge"],
             verbose=True,
             tools=[SafetyGuardTool(), HumanReviewTool()],
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def cost_latency_analyst(self) -> Agent:
+        from tools import CostCalculatorTool
+
         return Agent(
             config=self.agents_config["cost_latency_analyst"],
             verbose=True,
             tools=[CostCalculatorTool()],
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def regression_monitor(self) -> Agent:
+        from tools import RegressionComparatorTool
+
         return Agent(
             config=self.agents_config["regression_monitor"],
             verbose=True,
             tools=[RegressionComparatorTool()],
-            llm=OPENROUTER_LLM,
+            llm_call=call_llm,
         )
 
     def analyze_trace(self) -> Task:
@@ -113,21 +120,19 @@ class AgentEvaluatorCrew:
 
     def analyze_cost_latency(self) -> Task:
         return Task(
-            config=self.tasks_config["analyze_cost_latency"],
-            agent=self.cost_latency_analyst(),
+            config=self.tasks_config["analyze_cost_latency"], agent=self.cost_latency_analyst()
         )
 
     def monitor_regression(self) -> Task:
-        return Task(
-            config=self.tasks_config["monitor_regression"],
-            agent=self.regression_monitor(),
-        )
+        return Task(config=self.tasks_config["monitor_regression"], agent=self.regression_monitor())
 
     def coordinate_evaluation(self) -> Task:
+        from tools import MetricCalculatorTool
+
         return Task(
             config=self.tasks_config["coordinate_evaluation"],
             agent=self.evaluator_coordinator(),
-            tools=[MetricCalculatorTool()],  # scoped to final task only
+            tools=[MetricCalculatorTool()],
             output_pydantic=EvaluationReport,
             async_execution=False,
         )
@@ -153,13 +158,17 @@ class AgentEvaluatorCrew:
             process=Process.hierarchical,
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
-            memory=True,
+            memory=False,
             output_json=True,
         )
 
 
 # ====================== Run ======================
 if __name__ == "__main__":
+    if not os.getenv("OPENAI_API_KEY"):
+        print("❌ ERROR: OPENAI_API_KEY not found in .env!")
+        raise SystemExit(1)
+
     test_cases = [
         {
             "id": "TC-001",
