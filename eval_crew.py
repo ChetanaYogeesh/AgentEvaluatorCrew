@@ -37,10 +37,13 @@ _OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 _OPENROUTER_KEY = os.getenv("OPENAI_API_KEY")
 
 _MODEL_MAP: dict[str, str] = {
+    # Heavy reasoning → Claude 3.5 Sonnet
     "evaluator_coordinator": "anthropic/claude-3.5-sonnet",
     "quality_judge": "anthropic/claude-3.5-sonnet",
+    # Fast / cheap → Gemini Flash
     "trace_analyst": "google/gemini-2.0-flash-thinking-exp",
     "cost_latency_analyst": "google/gemini-2.0-flash-thinking-exp",
+    # Default → GPT-4o
     "safety_judge": "openai/gpt-4o",
     "regression_monitor": "openai/gpt-4o",
 }
@@ -57,11 +60,7 @@ def get_model_for_agent(agent_name: str) -> dict:
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew — per-agent smart model routing via OpenRouter.
-
-    Note: manager_agent (evaluator_coordinator) has no tools intentionally.
-    Tools are assigned only to worker agents and the final coordination task.
-    """
+    """Production Evaluation Crew — per-agent smart model routing via OpenRouter."""
 
     def __init__(self) -> None:
         with open("config/agents.yaml") as f:
@@ -70,10 +69,10 @@ class AgentEvaluatorCrew:
             self.tasks_config = yaml.safe_load(f)
 
     def evaluator_coordinator(self) -> Agent:
-        # Manager agent must NOT have tools in hierarchical process
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
+            tools=[MetricCalculatorTool()],
             llm=get_model_for_agent("evaluator_coordinator"),
         )
 
@@ -141,7 +140,6 @@ class AgentEvaluatorCrew:
         return Task(
             config=self.tasks_config["coordinate_evaluation"],
             agent=self.evaluator_coordinator(),
-            tools=[MetricCalculatorTool()],  # tool scoped to final task only
             output_pydantic=EvaluationReport,
             async_execution=False,
         )
@@ -178,8 +176,8 @@ if __name__ == "__main__":
     print("🚀 Starting Agent Evaluator Crew with Smart Model Routing...")
 
     if not os.getenv("OPENAI_API_KEY"):
-        print("❌ ERROR: OPENAI_API_KEY is not set!")
-        print("   Run: export OPENAI_API_KEY=sk-or-v1-...")
+        print("❌ ERROR: OPENAI_API_KEY environment variable is not set!")
+        print("   Export your OpenRouter key: export OPENAI_API_KEY=sk-or-v1-...")
         raise SystemExit(1)
 
     test_cases = [
@@ -198,7 +196,7 @@ if __name__ == "__main__":
     try:
         crew_obj = AgentEvaluatorCrew()
         crew = crew_obj.crew()
-        print("✅ Crew created successfully.")
+        print("✅ Crew created with smart model routing.")
 
         results = []
         for case in test_cases:
