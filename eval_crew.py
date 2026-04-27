@@ -16,6 +16,7 @@ from tools import (
     TraceParserTool,
 )
 
+
 # ====================== Pydantic Output Model ======================
 class EvaluationReport(BaseModel):
     test_case_id: str
