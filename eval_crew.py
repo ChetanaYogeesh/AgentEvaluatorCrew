@@ -16,10 +16,6 @@ from tools import (
     TraceParserTool,
 )
 
-# ====================== OpenTelemetry (disabled) ======================
-print("⚠️  OpenTelemetry disabled (set ENABLE_OTEL=true to enable)")
-
-
 # ====================== Pydantic Output Model ======================
 class EvaluationReport(BaseModel):
     test_case_id: str
@@ -32,35 +28,25 @@ class EvaluationReport(BaseModel):
     top_regressions: list[str]
 
 
-# ====================== Smart Model Selection ======================
-_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-_OPENROUTER_KEY = os.getenv("OPENAI_API_KEY")
+# ====================== OpenRouter Configuration ======================
+if not os.getenv("OPENAI_API_KEY"):
+    print("❌ ERROR: OPENAI_API_KEY is not set!")
+    print("   Export your OpenRouter key: export OPENAI_API_KEY=sk-or-v1-...")
+    raise SystemExit(1)
 
-_MODEL_MAP: dict[str, str] = {
-    # Heavy reasoning → Claude 3.5 Sonnet
-    "evaluator_coordinator": "anthropic/claude-3.5-sonnet",
-    "quality_judge": "anthropic/claude-3.5-sonnet",
-    # Fast / cheap → Gemini Flash
-    "trace_analyst": "google/gemini-2.0-flash-thinking-exp",
-    "cost_latency_analyst": "google/gemini-2.0-flash-thinking-exp",
-    # Default → GPT-4o
-    "safety_judge": "openai/gpt-4o",
-    "regression_monitor": "openai/gpt-4o",
+print("🚀 Starting Agent Evaluator Crew...")
+
+OPENROUTER_LLM: dict = {
+    "model": "openai/gpt-4o",
+    "api_key": os.getenv("OPENAI_API_KEY"),
+    "base_url": "https://openrouter.ai/api/v1",
+    "temperature": 0.0,
 }
-
-
-def get_model_for_agent(agent_name: str) -> dict:
-    """Return LLM config for the given agent role, falling back to gpt-4o."""
-    return {
-        "model": _MODEL_MAP.get(agent_name, "openai/gpt-4o"),
-        "api_key": _OPENROUTER_KEY,
-        "base_url": _OPENROUTER_BASE,
-    }
 
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew — per-agent smart model routing via OpenRouter."""
+    """Production Evaluation Crew — single OpenRouter model for all agents."""
 
     def __init__(self) -> None:
         with open("config/agents.yaml") as f:
@@ -69,11 +55,11 @@ class AgentEvaluatorCrew:
             self.tasks_config = yaml.safe_load(f)
 
     def evaluator_coordinator(self) -> Agent:
+        # Manager agent must NOT have tools in hierarchical process
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
-            tools=[MetricCalculatorTool()],
-            llm=get_model_for_agent("evaluator_coordinator"),
+            llm=OPENROUTER_LLM,
         )
 
     def trace_analyst(self) -> Agent:
@@ -81,14 +67,14 @@ class AgentEvaluatorCrew:
             config=self.agents_config["trace_analyst"],
             verbose=True,
             tools=[TraceParserTool()],
-            llm=get_model_for_agent("trace_analyst"),
+            llm=OPENROUTER_LLM,
         )
 
     def quality_judge(self) -> Agent:
         return Agent(
             config=self.agents_config["quality_judge"],
             verbose=True,
-            llm=get_model_for_agent("quality_judge"),
+            llm=OPENROUTER_LLM,
         )
 
     def safety_judge(self) -> Agent:
@@ -96,7 +82,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["safety_judge"],
             verbose=True,
             tools=[SafetyGuardTool(), HumanReviewTool()],
-            llm=get_model_for_agent("safety_judge"),
+            llm=OPENROUTER_LLM,
         )
 
     def cost_latency_analyst(self) -> Agent:
@@ -104,7 +90,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["cost_latency_analyst"],
             verbose=True,
             tools=[CostCalculatorTool()],
-            llm=get_model_for_agent("cost_latency_analyst"),
+            llm=OPENROUTER_LLM,
         )
 
     def regression_monitor(self) -> Agent:
@@ -112,7 +98,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["regression_monitor"],
             verbose=True,
             tools=[RegressionComparatorTool()],
-            llm=get_model_for_agent("regression_monitor"),
+            llm=OPENROUTER_LLM,
         )
 
     def analyze_trace(self) -> Task:
@@ -140,6 +126,7 @@ class AgentEvaluatorCrew:
         return Task(
             config=self.tasks_config["coordinate_evaluation"],
             agent=self.evaluator_coordinator(),
+            tools=[MetricCalculatorTool()],  # scoped to final task only
             output_pydantic=EvaluationReport,
             async_execution=False,
         )
@@ -166,20 +153,12 @@ class AgentEvaluatorCrew:
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
             memory=True,
-            enable_otel=False,
             output_json=True,
         )
 
 
-# ====================== Batch Runner ======================
+# ====================== Run ======================
 if __name__ == "__main__":
-    print("🚀 Starting Agent Evaluator Crew with Smart Model Routing...")
-
-    if not os.getenv("OPENAI_API_KEY"):
-        print("❌ ERROR: OPENAI_API_KEY environment variable is not set!")
-        print("   Export your OpenRouter key: export OPENAI_API_KEY=sk-or-v1-...")
-        raise SystemExit(1)
-
     test_cases = [
         {
             "id": "TC-001",
@@ -196,7 +175,7 @@ if __name__ == "__main__":
     try:
         crew_obj = AgentEvaluatorCrew()
         crew = crew_obj.crew()
-        print("✅ Crew created with smart model routing.")
+        print("✅ Crew created successfully. Running evaluation...")
 
         results = []
         for case in test_cases:
