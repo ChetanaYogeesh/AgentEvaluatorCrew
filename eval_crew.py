@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Process, Task
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from tools import (
@@ -15,6 +16,9 @@ from tools import (
     SafetyGuardTool,
     TraceParserTool,
 )
+
+# Load .env file
+load_dotenv()
 
 
 # ====================== Pydantic Output Model ======================
@@ -31,23 +35,24 @@ class EvaluationReport(BaseModel):
 
 # ====================== OpenRouter Configuration ======================
 if not os.getenv("OPENAI_API_KEY"):
-    print("❌ ERROR: OPENAI_API_KEY is not set!")
-    print("   Export your OpenRouter key: export OPENAI_API_KEY=sk-or-v1-...")
+    print("❌ ERROR: OPENAI_API_KEY not found in .env file!")
+    print("   Make sure your .env contains: OPENAI_API_KEY=sk-or-v1-...")
     raise SystemExit(1)
 
-print("🚀 Starting Agent Evaluator Crew...")
-
-OPENROUTER_LLM: dict = {
-    "model": "openai/gpt-4o",
+LLM_CONFIG: dict = {
+    "model": "openrouter/openai/gpt-4o",  # "openrouter/" prefix required by LiteLLM
     "api_key": os.getenv("OPENAI_API_KEY"),
     "base_url": "https://openrouter.ai/api/v1",
     "temperature": 0.0,
 }
 
+print("🚀 Starting Agent Evaluator Crew with OpenRouter...")
+print(f"✅ Using model: {LLM_CONFIG['model']}")
+
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew — single OpenRouter model for all agents."""
+    """Production Evaluation Crew — single LiteLLM/OpenRouter model for all agents."""
 
     def __init__(self) -> None:
         with open("config/agents.yaml") as f:
@@ -60,7 +65,7 @@ class AgentEvaluatorCrew:
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def trace_analyst(self) -> Agent:
@@ -68,14 +73,14 @@ class AgentEvaluatorCrew:
             config=self.agents_config["trace_analyst"],
             verbose=True,
             tools=[TraceParserTool()],
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def quality_judge(self) -> Agent:
         return Agent(
             config=self.agents_config["quality_judge"],
             verbose=True,
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def safety_judge(self) -> Agent:
@@ -83,7 +88,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["safety_judge"],
             verbose=True,
             tools=[SafetyGuardTool(), HumanReviewTool()],
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def cost_latency_analyst(self) -> Agent:
@@ -91,7 +96,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["cost_latency_analyst"],
             verbose=True,
             tools=[CostCalculatorTool()],
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def regression_monitor(self) -> Agent:
@@ -99,7 +104,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["regression_monitor"],
             verbose=True,
             tools=[RegressionComparatorTool()],
-            llm=OPENROUTER_LLM,
+            llm=LLM_CONFIG,
         )
 
     def analyze_trace(self) -> Task:
