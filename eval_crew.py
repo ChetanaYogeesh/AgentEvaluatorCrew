@@ -1,59 +1,96 @@
-from crewai import Agent, Task, Crew, Process, Flow
-from crewai.flow import start, listen
-from pydantic import BaseModel
 import json
-from typing import Dict, Any, List
 import os
+from typing import Any
+
+import yaml
+from crewai import Agent, Crew, Flow, Process, Task
+from crewai.flow import listen, start
+from pydantic import BaseModel
+
+from tools import (
+    CostCalculatorTool,
+    HumanReviewTool,
+    MetricCalculatorTool,
+    RegressionComparatorTool,
+    SafetyGuardTool,
+    TraceParserTool,
+)
+
+# ====================== OpenTelemetry Setup (OPTIONAL) ======================
+if os.getenv("ENABLE_OTEL", "false").lower() == "true":
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
+    os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
+    trace.set_tracer_provider(TracerProvider())
+    trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    print("✅ OpenTelemetry + LangSmith enabled")
+else:
+    print("⚠️  OpenTelemetry disabled (set ENABLE_OTEL=true to enable)")
+
 
 # ====================== Pydantic Output Model ======================
 class EvaluationReport(BaseModel):
     test_case_id: str
     pass_fail: str
-    metrics: Dict[str, Any]
+    metrics: dict[str, Any]
     failure_mode: str
-    recommendations: List[str]
+    recommendations: list[str]
     release_decision: str
-    top_bottlenecks: List[str]
-    top_regressions: List[str]
+    top_bottlenecks: list[str]
+    top_regressions: list[str]
 
-# ====================== OpenTelemetry Setup ======================
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
-os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
-
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-trace.set_tracer_provider(TracerProvider())
-trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-print("✅ OpenTelemetry enabled")
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
     """Production Evaluation Crew for Multi-Agent Systems"""
 
-    def __init__(self):
-        self.agents_config = "config/agents.yaml"
-        self.tasks_config = "config/tasks.yaml"
+    def __init__(self) -> None:
+        with open("config/agents.yaml") as f:
+            self.agents_config = yaml.safe_load(f)
+        with open("config/tasks.yaml") as f:
+            self.tasks_config = yaml.safe_load(f)
 
     def evaluator_coordinator(self) -> Agent:
-        return Agent(config=self.agents_config["evaluator_coordinator"], verbose=True, tools=[MetricCalculatorTool()])
+        return Agent(
+            config=self.agents_config["evaluator_coordinator"],
+            verbose=True,
+            tools=[MetricCalculatorTool()],
+        )
 
     def trace_analyst(self) -> Agent:
-        return Agent(config=self.agents_config["trace_analyst"], verbose=True, tools=[TraceParserTool()])
+        return Agent(
+            config=self.agents_config["trace_analyst"],
+            verbose=True,
+            tools=[TraceParserTool()],
+        )
 
     def quality_judge(self) -> Agent:
         return Agent(config=self.agents_config["quality_judge"], verbose=True)
 
     def safety_judge(self) -> Agent:
-        return Agent(config=self.agents_config["safety_judge"], verbose=True, tools=[SafetyGuardTool(), HumanReviewTool()])
+        return Agent(
+            config=self.agents_config["safety_judge"],
+            verbose=True,
+            tools=[SafetyGuardTool(), HumanReviewTool()],
+        )
 
     def cost_latency_analyst(self) -> Agent:
-        return Agent(config=self.agents_config["cost_latency_analyst"], verbose=True, tools=[CostCalculatorTool()])
+        return Agent(
+            config=self.agents_config["cost_latency_analyst"],
+            verbose=True,
+            tools=[CostCalculatorTool()],
+        )
 
     def regression_monitor(self) -> Agent:
-        return Agent(config=self.agents_config["regression_monitor"], verbose=True, tools=[RegressionComparatorTool()])
+        return Agent(
+            config=self.agents_config["regression_monitor"],
+            verbose=True,
+            tools=[RegressionComparatorTool()],
+        )
 
     def analyze_trace(self) -> Task:
         return Task(config=self.tasks_config["analyze_trace"], agent=self.trace_analyst())
@@ -65,20 +102,27 @@ class AgentEvaluatorCrew:
         return Task(config=self.tasks_config["judge_safety"], agent=self.safety_judge())
 
     def analyze_cost_latency(self) -> Task:
-        return Task(config=self.tasks_config["analyze_cost_latency"], agent=self.cost_latency_analyst())
+        return Task(
+            config=self.tasks_config["analyze_cost_latency"],
+            agent=self.cost_latency_analyst(),
+        )
 
     def monitor_regression(self) -> Task:
-        return Task(config=self.tasks_config["monitor_regression"], agent=self.regression_monitor())
+        return Task(
+            config=self.tasks_config["monitor_regression"],
+            agent=self.regression_monitor(),
+        )
 
     def coordinate_evaluation(self) -> Task:
         return Task(
             config=self.tasks_config["coordinate_evaluation"],
             agent=self.evaluator_coordinator(),
             output_pydantic=EvaluationReport,
-            async_execution=False
+            async_execution=False,
         )
 
     def crew(self) -> Crew:
+        otel_enabled = os.getenv("ENABLE_OTEL", "false").lower() == "true"
         return Crew(
             agents=[
                 self.evaluator_coordinator(),
@@ -100,20 +144,20 @@ class AgentEvaluatorCrew:
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
             memory=True,
-            enable_otel=True,
-            output_json=True
+            enable_otel=otel_enabled,
+            output_json=True,
         )
 
 
 # ====================== Flow for Batch Evaluation ======================
 class EvaluationFlow(Flow):
     @start()
-    def load_batch(self, test_cases: List[Dict]):
+    def load_batch(self, test_cases: list[dict]) -> str:
         self.test_cases = test_cases
         return "Batch loaded"
 
     @listen("load_batch")
-    def run_evaluations(self):
+    def run_evaluations(self) -> list:
         crew = AgentEvaluatorCrew().crew()
         results = []
         for case in self.test_cases:
@@ -121,20 +165,24 @@ class EvaluationFlow(Flow):
                 "test_case_id": case["id"],
                 "trace": json.dumps(case["trace"]),
                 "expected_outcome": case["expected"],
-                "baseline": json.dumps(case.get("baseline", {}))
+                "baseline": json.dumps(case.get("baseline", {})),
             }
             result = crew.kickoff(inputs=inputs)
             results.append(result)
         return results
 
     @listen("run_evaluations")
-    def finalize_batch(self, results):
+    def finalize_batch(self, results: list) -> None:
         with open("evaluation_results.json", "w") as f:
-            json.dump([r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results], f, indent=2)
-        
-        print("\n" + "="*80)
+            json.dump(
+                [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results],
+                f,
+                indent=2,
+            )
+
+        print("\n" + "=" * 80)
         print("BATCH EVALUATION COMPLETE")
-        print("="*80)
+        print("=" * 80)
         print(f"Total cases: {len(results)}")
         passes = sum(1 for r in results if getattr(r, "pass_fail", "FAIL") == "PASS")
         print(f"Pass rate: {passes / len(results):.1%}")
@@ -148,9 +196,13 @@ if __name__ == "__main__":
     test_cases = [
         {
             "id": "TC-001",
-            "trace": {"steps": [{"name": "research", "latency_ms": 2450}], "loop_count": 0, "retry_count": 1},
+            "trace": {
+                "steps": [{"name": "research", "latency_ms": 2450}],
+                "loop_count": 0,
+                "retry_count": 1,
+            },
             "expected": "Paris is the capital of France",
-            "baseline": {"p95_latency_ms": 3000, "safety_violation_rate": 0}
+            "baseline": {"p95_latency_ms": 3000, "safety_violation_rate": 0},
         }
     ]
 
