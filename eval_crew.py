@@ -24,27 +24,33 @@ class EvaluationReport(BaseModel):
     top_regressions: list[str]
 
 
-print("🚀 Starting Agent Evaluator Crew with OpenRouter...")
+print("🚀 Starting Agent Evaluator Crew with Direct LiteLLM...")
 
 OPENROUTER_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
-# Direct LiteLLM call function — moved key check inside so import is safe
-def call_llm(messages: list[dict], model: str = "openai/gpt-4o") -> str:
+# Direct LiteLLM call function (bypasses CrewAI internal issues)
+# Key check is inside the function so module import is always safe for pytest
+def llm_call(messages: list[dict], model: str = "gpt-4o-mini") -> str:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set. Add it to your .env file.")
-    response = litellm.completion(
-        model=f"openrouter/{model}",
-        messages=messages,
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        temperature=0.0,
-    )
-    return response.choices[0].message.content
+    try:
+        response = litellm.completion(
+            model=f"openrouter/openai/{model}",
+            messages=messages,
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            temperature=0.0,
+            max_tokens=2000,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"LiteLLM call failed: {e}")
+        raise
 
 
-print("✅ OpenRouter + LiteLLM configured")
+print("✅ Direct LiteLLM OpenRouter configured")
 
 
 # ====================== Crew Definition ======================
@@ -59,7 +65,7 @@ class AgentEvaluatorCrew:
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def trace_analyst(self) -> Agent:
@@ -69,14 +75,14 @@ class AgentEvaluatorCrew:
             config=self.agents_config["trace_analyst"],
             verbose=True,
             tools=[TraceParserTool()],
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def quality_judge(self) -> Agent:
         return Agent(
             config=self.agents_config["quality_judge"],
             verbose=True,
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def safety_judge(self) -> Agent:
@@ -86,7 +92,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["safety_judge"],
             verbose=True,
             tools=[SafetyGuardTool(), HumanReviewTool()],
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def cost_latency_analyst(self) -> Agent:
@@ -96,7 +102,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["cost_latency_analyst"],
             verbose=True,
             tools=[CostCalculatorTool()],
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def regression_monitor(self) -> Agent:
@@ -106,7 +112,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["regression_monitor"],
             verbose=True,
             tools=[RegressionComparatorTool()],
-            llm_call=call_llm,
+            llm_call=llm_call,
         )
 
     def analyze_trace(self) -> Task:
@@ -166,7 +172,7 @@ class AgentEvaluatorCrew:
 # ====================== Run ======================
 if __name__ == "__main__":
     if not os.getenv("OPENAI_API_KEY"):
-        print("❌ ERROR: OPENAI_API_KEY not found in .env!")
+        print("\u274c ERROR: OPENAI_API_KEY not found in .env!")
         raise SystemExit(1)
 
     test_cases = [
@@ -185,7 +191,7 @@ if __name__ == "__main__":
     try:
         crew_obj = AgentEvaluatorCrew()
         crew = crew_obj.crew()
-        print("✅ Crew created successfully. Running evaluation...")
+        print("\u2705 Crew created successfully. Running evaluation...")
 
         results = []
         for case in test_cases:
@@ -197,7 +203,7 @@ if __name__ == "__main__":
             }
             result = crew.kickoff(inputs=inputs)
             results.append(result)
-            print(f"✅ Evaluated {case['id']} → {getattr(result, 'pass_fail', 'UNKNOWN')}")
+            print(f"\u2705 Evaluated {case['id']} \u2192 {getattr(result, 'pass_fail', 'UNKNOWN')}")
 
         with open("evaluation_results.json", "w") as f:
             json.dump(
@@ -207,11 +213,11 @@ if __name__ == "__main__":
             )
 
         print("\n" + "=" * 80)
-        print("✅ SUCCESS! JSON file created")
-        print("📁 evaluation_results.json has been saved")
+        print("\u2705 SUCCESS! JSON file created")
+        print("\U0001f4c1 evaluation_results.json has been saved")
         print("=" * 80)
 
     except Exception as e:
-        print("❌ ERROR occurred:")
+        print("\u274c ERROR occurred:")
         print(e)
         traceback.print_exc()
