@@ -1,13 +1,10 @@
 import json
 import os
+import traceback
 from typing import Any
 
-from crewai import Agent, Crew, Flow, Process, Task
-from crewai.flow import listen, start
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+import yaml
+from crewai import Agent, Crew, Process, Task
 from pydantic import BaseModel
 
 from tools import (
@@ -19,13 +16,8 @@ from tools import (
     TraceParserTool,
 )
 
-# ====================== OpenTelemetry Setup ======================
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
-os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
-
-trace.set_tracer_provider(TracerProvider())
-trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-print("✅ OpenTelemetry enabled")
+# ====================== OpenTelemetry (disabled) ======================
+print("⚠️  OpenTelemetry disabled (set ENABLE_OTEL=true to enable)")
 
 
 # ====================== Pydantic Output Model ======================
@@ -42,11 +34,15 @@ class EvaluationReport(BaseModel):
 
 # ====================== Crew Definition ======================
 class AgentEvaluatorCrew:
-    """Production Evaluation Crew for Multi-Agent Systems"""
+    """Production Evaluation Crew — single model via OpenRouter."""
+
+    _llm: dict = {
+        "model": "openai/gpt-4o",
+        "api_key": os.getenv("OPENAI_API_KEY"),
+        "base_url": "https://openrouter.ai/api/v1",
+    }
 
     def __init__(self) -> None:
-        import yaml
-
         with open("config/agents.yaml") as f:
             self.agents_config = yaml.safe_load(f)
         with open("config/tasks.yaml") as f:
@@ -57,6 +53,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
             tools=[MetricCalculatorTool()],
+            llm=self._llm,
         )
 
     def trace_analyst(self) -> Agent:
@@ -64,16 +61,22 @@ class AgentEvaluatorCrew:
             config=self.agents_config["trace_analyst"],
             verbose=True,
             tools=[TraceParserTool()],
+            llm=self._llm,
         )
 
     def quality_judge(self) -> Agent:
-        return Agent(config=self.agents_config["quality_judge"], verbose=True)
+        return Agent(
+            config=self.agents_config["quality_judge"],
+            verbose=True,
+            llm=self._llm,
+        )
 
     def safety_judge(self) -> Agent:
         return Agent(
             config=self.agents_config["safety_judge"],
             verbose=True,
             tools=[SafetyGuardTool(), HumanReviewTool()],
+            llm=self._llm,
         )
 
     def cost_latency_analyst(self) -> Agent:
@@ -81,6 +84,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["cost_latency_analyst"],
             verbose=True,
             tools=[CostCalculatorTool()],
+            llm=self._llm,
         )
 
     def regression_monitor(self) -> Agent:
@@ -88,6 +92,7 @@ class AgentEvaluatorCrew:
             config=self.agents_config["regression_monitor"],
             verbose=True,
             tools=[RegressionComparatorTool()],
+            llm=self._llm,
         )
 
     def analyze_trace(self) -> Task:
@@ -146,49 +151,13 @@ class AgentEvaluatorCrew:
         )
 
 
-# ====================== Flow for Batch Evaluation ======================
-class EvaluationFlow(Flow):
-    @start()
-    def load_batch(self, test_cases: list[dict]) -> str:
-        self.test_cases = test_cases
-        return "Batch loaded"
-
-    @listen("load_batch")
-    def run_evaluations(self) -> list:
-        crew = AgentEvaluatorCrew().crew()
-        results = []
-        for case in self.test_cases:
-            inputs = {
-                "test_case_id": case["id"],
-                "trace": json.dumps(case["trace"]),
-                "expected_outcome": case["expected"],
-                "baseline": json.dumps(case.get("baseline", {})),
-            }
-            result = crew.kickoff(inputs=inputs)
-            results.append(result)
-        return results
-
-    @listen("run_evaluations")
-    def finalize_batch(self, results: list) -> None:
-        with open("evaluation_results.json", "w") as f:
-            json.dump(
-                [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results],
-                f,
-                indent=2,
-            )
-
-        print("\n" + "=" * 80)
-        print("BATCH EVALUATION COMPLETE")
-        print("=" * 80)
-        print(f"Total cases: {len(results)}")
-        passes = sum(1 for r in results if getattr(r, "pass_fail", "FAIL") == "PASS")
-        print(f"Pass rate: {passes / len(results):.1%}")
-        print("📁 Results saved to evaluation_results.json")
-
-
-# ====================== Example Batch Runner ======================
+# ====================== Batch Runner ======================
 if __name__ == "__main__":
     print("🚀 Starting Agent Evaluator Crew...")
+
+    if not os.getenv("OPENAI_API_KEY"):
+        print("❌ ERROR: OPENAI_API_KEY not set. Export your OpenRouter key first.")
+        raise SystemExit(1)
 
     test_cases = [
         {
@@ -203,5 +172,37 @@ if __name__ == "__main__":
         }
     ]
 
-    flow = EvaluationFlow()
-    flow.kickoff(inputs={"test_cases": test_cases})
+    try:
+        crew_obj = AgentEvaluatorCrew()
+        crew = crew_obj.crew()
+        print("✅ Crew created successfully. Running evaluation...")
+
+        results = []
+        for case in test_cases:
+            inputs = {
+                "test_case_id": case["id"],
+                "trace": json.dumps(case["trace"]),
+                "expected_outcome": case["expected"],
+                "baseline": json.dumps(case.get("baseline", {})),
+            }
+            result = crew.kickoff(inputs=inputs)
+            results.append(result)
+            print(f"✅ Evaluated {case['id']} → {getattr(result, 'pass_fail', 'UNKNOWN')}")
+
+        with open("evaluation_results.json", "w") as f:
+            json.dump(
+                [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in results],
+                f,
+                indent=2,
+            )
+
+        print("\n" + "=" * 80)
+        print("✅ SUCCESS! JSON file created")
+        print(f"Total cases: {len(results)}")
+        print("📁 evaluation_results.json has been saved")
+        print("=" * 80)
+
+    except Exception as e:
+        print("❌ ERROR occurred:")
+        print(e)
+        traceback.print_exc()
