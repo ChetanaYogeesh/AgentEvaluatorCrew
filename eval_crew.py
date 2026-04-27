@@ -2,9 +2,12 @@ import json
 import os
 from typing import Any
 
-import yaml
 from crewai import Agent, Crew, Flow, Process, Task
 from crewai.flow import listen, start
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel
 
 from tools import (
@@ -16,20 +19,13 @@ from tools import (
     TraceParserTool,
 )
 
-# ====================== OpenTelemetry Setup (OPTIONAL) ======================
-if os.getenv("ENABLE_OTEL", "false").lower() == "true":
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+# ====================== OpenTelemetry Setup ======================
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
+os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
 
-    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://api.langsmith.com"
-    os.environ["OTEL_SERVICE_NAME"] = "agent-evaluator-crew"
-    trace.set_tracer_provider(TracerProvider())
-    trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    print("✅ OpenTelemetry + LangSmith enabled")
-else:
-    print("⚠️  OpenTelemetry disabled (set ENABLE_OTEL=true to enable)")
+trace.set_tracer_provider(TracerProvider())
+trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+print("✅ OpenTelemetry enabled")
 
 
 # ====================== Pydantic Output Model ======================
@@ -49,6 +45,8 @@ class AgentEvaluatorCrew:
     """Production Evaluation Crew for Multi-Agent Systems"""
 
     def __init__(self) -> None:
+        import yaml
+
         with open("config/agents.yaml") as f:
             self.agents_config = yaml.safe_load(f)
         with open("config/tasks.yaml") as f:
@@ -144,7 +142,7 @@ class AgentEvaluatorCrew:
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
             memory=True,
-            enable_otel=otel_enabled,
+            enable_otel=True,
             output_json=True,
         )
 
