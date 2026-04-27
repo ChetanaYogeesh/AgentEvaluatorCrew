@@ -3,7 +3,6 @@ import os
 import traceback
 from typing import Any
 
-import litellm
 import yaml
 from crewai import Agent, Crew, Process, Task
 from dotenv import load_dotenv
@@ -19,6 +18,7 @@ from tools import (
 )
 
 load_dotenv()
+
 
 # ====================== Pydantic Output Model ======================
 class EvaluationReport(BaseModel):
