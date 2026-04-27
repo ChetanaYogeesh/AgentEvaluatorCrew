@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 from crewai import Agent, Crew, Process, Task
+from crewai.llm import LLM
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
@@ -44,26 +45,25 @@ _MODEL_MAP: dict[str, str] = {
     "coordinator": "openrouter/openai/gpt-4o",
     "safety": "openrouter/anthropic/claude-3-haiku",
 }
-_DEFAULT_MODEL = "openrouter/google/gemini-flash-1.5"
-
 _TOKEN_MAP: dict[str, int] = {
     "quality": 4000,
     "coordinator": 4000,
     "safety": 3000,
 }
+_DEFAULT_MODEL = "openrouter/google/gemini-flash-1.5"
 _DEFAULT_TOKENS = 2000
 
 
-def get_llm_config(agent_name: str) -> dict:
-    """Return LiteLLM config for the given agent role."""
+def get_llm(agent_name: str) -> LLM:
+    """Return a CrewAI LLM object for the given agent role."""
     key = next((k for k in _MODEL_MAP if k in agent_name.lower()), None)
-    return {
-        "model": _MODEL_MAP.get(key, _DEFAULT_MODEL) if key else _DEFAULT_MODEL,
-        "api_key": OPENROUTER_API_KEY,
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.0,
-        "max_tokens": _TOKEN_MAP.get(key, _DEFAULT_TOKENS) if key else _DEFAULT_TOKENS,
-    }
+    return LLM(
+        model=_MODEL_MAP[key] if key else _DEFAULT_MODEL,
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        temperature=0.0,
+        max_tokens=_TOKEN_MAP[key] if key else _DEFAULT_TOKENS,
+    )
 
 
 print("🚀 Starting Final CrewAI Evaluator with Smart Model Switching...")
@@ -89,14 +89,11 @@ class AgentEvaluatorCrew:
             self.tasks_config = yaml.safe_load(f)
 
     def get_agent(self, name: str) -> Agent:
-        tools = next(
-            (v for k, v in _TOOL_MAP.items() if k in name.lower()),
-            [],
-        )
+        tools = next((v for k, v in _TOOL_MAP.items() if k in name.lower()), [])
         return Agent(
             config=self.agents_config.get(name, {}),
             verbose=True,
-            llm=get_llm_config(name),
+            llm=get_llm(name),
             tools=tools,
         )
 
@@ -105,7 +102,7 @@ class AgentEvaluatorCrew:
         return Agent(
             config=self.agents_config["evaluator_coordinator"],
             verbose=True,
-            llm=get_llm_config("coordinator"),
+            llm=get_llm("coordinator"),
         )
 
     def coordinate_evaluation(self) -> Task:
