@@ -141,7 +141,7 @@ class AgentEvaluatorCrew:
             manager_agent=self.evaluator_coordinator(),
             verbose=True,
             memory=True,
-            enable_otel=True,
+            enable_otel=os.getenv("ENABLE_OTEL", "false").lower() == "true",
             output_json=True,
         )
 
