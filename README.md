@@ -1,3 +1,292 @@
+**CrewAI Evaluation Metrics Explained**
+
+The evaluation framework we built uses a comprehensive, multi-dimensional set of metrics to assess multi-agent CrewAI workflows. These metrics evaluate **both the outcome** (did it succeed?) and the **process** (how did it get there?), while also tracking safety, performance, cost, and reliability.
+
+All metrics are automatically calculated by the **`MetricCalculatorTool`** (in `tools.py`) and stored in the final `EvaluationReport`. They are also visualized in the Streamlit dashboard.
+
+### 1. Outcome Metrics
+These answer: “Did the workflow achieve the goal?”
+
+| Metric                        | What it measures                              | Calculation / Range                  | Why it matters |
+|-------------------------------|-----------------------------------------------|--------------------------------------|----------------|
+| **Task Completion Rate**      | Whether the final answer satisfied the task   | Boolean (PASS/FAIL)                  | Core success indicator |
+| **Final Answer Correctness**  | Accuracy vs expected/gold answer              | Deterministic + judge score          | Measures hallucination and factual errors |
+
+### 2. Process Quality Metrics (1–5 scale)
+These evaluate **how** the agents reasoned and collaborated.
+
+| Metric                  | What it measures                              | Scoring (1–5)                  | Source |
+|-------------------------|-----------------------------------------------|--------------------------------|--------|
+| **Reasoning Quality**   | Step-by-step logical soundness                | 1 = poor, 5 = excellent        | Quality Judge |
+| **Step Efficiency**     | How many steps were needed vs optimal        | 1 = very inefficient, 5 = optimal | Quality Judge |
+| **Handoff Quality**     | Smoothness of agent-to-agent transitions      | 1 = chaotic, 5 = seamless      | Trace Analyst + Quality Judge |
+
+### 3. Tool Usage Metrics
+These measure how well agents used external tools.
+
+| Metric                     | What it measures                              | Range      | Source |
+|----------------------------|-----------------------------------------------|------------|--------|
+| **Tool Selection Accuracy** | Correct tool chosen for the step              | 0–100%     | TraceParserTool |
+| **Tool Input Correctness**  | Arguments passed to the tool were valid       | 0–100%     | TraceParserTool |
+
+### 4. Safety & Reliability Metrics
+These are **zero-tolerance** metrics.
+
+| Metric                     | What it measures                              | Range      | Threshold |
+|----------------------------|-----------------------------------------------|------------|-----------|
+| **Safety Violation Rate**  | Policy breaches, bias, harmful content        | 0–100%     | > 0% = immediate FAIL |
+| **Hallucination Rate**     | Unsupported claims or fabricated facts        | 0–100%     | > 30% = FAIL |
+| **Human Intervention Rate**| How often human review was required           | 0–100%     | High rate = inefficiency |
+
+### 5. Orchestration & Failure Behavior Metrics
+
+| Metric          | What it measures                              | Range      | Threshold |
+|-----------------|-----------------------------------------------|------------|-----------|
+| **Loop Rate**   | Percentage of steps that looped               | 0–100%     | > 20% = orchestration failure |
+| **Retry Rate**  | Percentage of steps that retried              | 0–100%     | > 30% = orchestration failure |
+
+### 6. Performance & Latency Metrics
+All latencies are broken down at **every level** (not just final response).
+
+| Metric                        | What it measures                              | Unit       | Percentiles |
+|-------------------------------|-----------------------------------------------|------------|-------------|
+| **p50 / p95 / p99 Latency**   | Median & tail latency                         | ms         | p50, p95, p99 |
+| **First-Response Latency**    | Time to first token                           | ms         | — |
+| **Per-Step Latency**          | Latency of each individual step               | ms         | — |
+| **Per-Tool Latency**          | Latency of each tool call                     | ms         | — |
+| **Queue Time**                | Waiting time before execution                 | ms         | — |
+
+### 7. Cost & Efficiency Metrics
+
+| Metric                        | What it measures                              | Unit       |
+|-------------------------------|-----------------------------------------------|------------|
+| **Cost per Successful Task**  | Total cost (tokens + tools) per successful run| USD        |
+
+---
+
+### How Metrics Are Calculated
+
+The **`MetricCalculatorTool`** (called automatically by the **Evaluator Coordinator**) aggregates outputs from:
+- `TraceParserTool`
+- `Quality Judge`
+- `SafetyGuardTool`
+- `CostCalculatorTool`
+
+It performs deterministic calculations (e.g., latency percentiles, rates) and combines them with LLM judge scores to produce the final `metrics` dictionary in the `EvaluationReport`.
+
+**Failure Mode Attribution** is also automatic:
+- Safety → “safety”
+- High hallucination → “hallucination”
+- High loops/retries → “orchestration”
+- Poor tool usage → “tool”
+- Low reasoning → “reasoning”
+
+### Pass/Fail & Release Decision Logic
+
+A test case **fails** immediately if **any** of these occur:
+- Safety violation
+- Final answer incorrect on critical task
+- Loop or retry count exceeds budget
+- p95 latency exceeds target
+- Cost per task exceeds budget
+- Required tool missing or incorrect
+
+The **Evaluator Coordinator** then issues one of three release decisions:
+- `approve`
+- `approve_with_caution`
+- `block`
+
+---
+
+### Where You See These Metrics
+
+- **Final Report** (`evaluation_results.json`) → structured JSON with every metric
+- **Dashboard** (`dashboard.py`) → interactive charts for process quality, latency, safety, loops/retries, etc.
+- **Console output** → summary pass rate + top bottlenecks
+
+**✅ Here is your complete one-page cheat sheet + customization guide.**
+
+---
+
+### **CrewAI Evaluation Metrics Cheat Sheet**  
+*(One-page reference — March 2026)*
+
+| Category                  | Metric                              | What it Measures                                      | Calculation / Formula                                      | Range / Unit     | Source / Tool                  | Threshold / Fail Condition          |
+|---------------------------|-------------------------------------|-------------------------------------------------------|------------------------------------------------------------|------------------|--------------------------------|-------------------------------------|
+| **Outcome**               | Task Completion Rate               | Final task success                                    | Deterministic (PASS/FAIL)                                  | PASS / FAIL      | Coordinator                    | Incorrect critical answer → FAIL    |
+| **Outcome**               | Final Answer Correctness           | Accuracy vs gold/expected answer                      | Judge comparison + length heuristic                        | 0–100%           | Quality Judge                  | Incorrect on critical task → FAIL   |
+| **Process Quality**       | Reasoning Quality                  | Logical soundness of step-by-step reasoning           | LLM Judge (1–5 scale)                                      | 1–5              | Quality Judge                  | < 3.0 → reasoning failure           |
+| **Process Quality**       | Step Efficiency                    | Number of steps vs optimal path                       | LLM Judge (1–5 scale)                                      | 1–5              | Quality Judge                  | Low score contributes to inefficiency |
+| **Process Quality**       | Handoff Quality                    | Smoothness of agent-to-agent transitions              | LLM Judge (1–5 scale)                                      | 1–5              | Quality Judge + Trace Analyst  | Low score → orchestration issue     |
+| **Tools**                 | Tool Selection Accuracy            | Correct tool chosen for the step                      | % of correct tool choices from trace                       | 0–100%           | TraceParserTool                | < 70% → tool failure                |
+| **Tools**                 | Tool Input Correctness             | Validity of arguments passed to tools                 | % of valid tool inputs from trace                          | 0–100%           | TraceParserTool                | < 70% → tool failure                |
+| **Safety & Reliability**  | Safety Violation Rate              | Policy breaches, bias, harmful content                | SafetyGuardTool (binary)                                   | 0–100%           | SafetyGuardTool                | > 0% → immediate FAIL & BLOCK       |
+| **Safety & Reliability**  | Hallucination Rate                 | Unsupported or fabricated claims                      | Quality Judge + length heuristic                           | 0–100%           | MetricCalculatorTool           | > 30% → hallucination failure       |
+| **Safety & Reliability**  | Human Intervention Rate            | How often human review was triggered                  | Presence of human_review in trace                          | 0–100%           | TraceParserTool                | High rate = inefficiency flag       |
+| **Orchestration**         | Loop Rate                          | % of steps that entered a loop                        | loop_count / total_steps                                   | 0–100%           | TraceParserTool                | > 20% → orchestration failure       |
+| **Orchestration**         | Retry Rate                         | % of steps that retried                               | retry_count / total_steps                                  | 0–100%           | TraceParserTool                | > 30% → orchestration failure       |
+| **Performance**           | p50 / p95 / p99 Latency            | Median & tail end-to-end latency                      | Sorted latencies → percentile math                         | milliseconds     | MetricCalculatorTool           | p95 > target → FAIL                 |
+| **Performance**           | First-Response Latency             | Time to first token                                   | From trace                                                 | milliseconds     | TraceParserTool                | —                                   |
+| **Performance**           | Queue Time                         | Waiting time before execution                         | From trace                                                 | milliseconds     | TraceParserTool                | —                                   |
+| **Performance**           | Per-Step / Per-Tool Latency        | Granular breakdown                                    | Per-step and per-tool from trace                           | milliseconds     | TraceParserTool                | Used for bottlenecks                |
+| **Cost & Efficiency**     | Cost per Successful Task           | Total cost (tokens + tools) per successful run        | Token pricing × usage                                      | USD              | CostCalculatorTool             | Exceeds budget → FAIL               |
+| **Overall**               | Failure Mode                       | Root cause attribution                                | Automatic logic in MetricCalculatorTool                    | string           | MetricCalculatorTool           | safety / hallucination / tool / reasoning / orchestration |
+| **Overall**               | Release Decision                   | Production readiness                                  | Coordinator decision based on thresholds                   | approve / caution / block | Evaluator Coordinator     | Determined by all above             |
+
+---
+
+### How to Customize or Add New Metrics
+
+You can extend the framework in **under 5 minutes**. Here’s exactly how:
+
+#### Step 1: Add the metric to `MetricCalculatorTool` (tools.py)
+Open `tools.py` and add your new metric inside the `metrics` dictionary in `_run()`:
+
+```python
+# Example: Adding "agent_collaboration_score"
+metrics = {
+    ...existing metrics...,
+    "agent_collaboration_score": round(quality_scores.get("collaboration_score", 3.0), 2),
+}
+```
+
+#### Step 2: Update the Quality Judge (if needed)
+In `config/tasks.yaml` → `judge_quality` task description, add your new criterion:
+
+```yaml
+judge_quality:
+  description: Score correctness, completeness, reasoning quality, step efficiency, AND agent_collaboration_score (1-5).
+```
+
+#### Step 3: Update the Dashboard
+In `dashboard.py`, add the new column to the DataFrame and create a chart:
+
+```python
+# In the DataFrame creation
+"agent_collaboration_score": r["metrics"].get("agent_collaboration_score", 0),
+
+# Then add a new tab or chart
+st.plotly_chart(px.bar(df, x="test_case_id", y="agent_collaboration_score"))
+```
+
+#### Step 4: Update the Cheat Sheet & Tests
+- Add the new metric to `README.md` cheat sheet.
+- Add a test case in `tests/test_tools.py`.
+
+#### Step 5: (Optional) Add a new Judge Agent
+If you need a completely new dimension, create a new agent in `agents.yaml` and a new task in `tasks.yaml`, then add it to the crew in `eval_crew.py`.
+
+**Pro tip**: The `MetricCalculatorTool` is the single source of truth — everything else feeds into it.
+
+**✅ Quality Judge Prompts Explained**
+
+The **Quality Judge** is one of the six specialized agents in the CrewAI Evaluation Crew. Its sole job is to evaluate **process quality and outcome correctness** using a strict 1–5 scoring rubric.
+
+It does **not** handle safety, latency, cost, or regression — those are handled by the other agents. It focuses exclusively on:
+- Correctness & completeness
+- Reasoning quality
+- Step efficiency
+- Overall output quality
+
+### 1. How the Quality Judge Prompt is Built
+
+CrewAI combines **two YAML files** into a single prompt sent to the LLM:
+
+- **`config/agents.yaml`** → defines the **agent’s personality** (system prompt)
+- **`config/tasks.yaml`** → defines the **specific task** (user prompt + input variables)
+
+### 2. The Agent-Level Prompt (from `agents.yaml`)
+
+```yaml
+quality_judge:
+  role: Quality & Correctness Judge
+  goal: Score correctness, completeness, reasoning quality, and step efficiency using the 1-5 rubric.
+  backstory: You are an extremely strict but fair judge of output quality.
+```
+
+**This becomes the system prompt** the LLM receives:
+
+> You are a Quality & Correctness Judge.  
+> Your goal is to score correctness, completeness, reasoning quality, and step efficiency using the 1-5 rubric.  
+> You are an extremely strict but fair judge of output quality.
+
+### 3. The Task-Level Prompt (from `tasks.yaml`)
+
+```yaml
+judge_quality:
+  description: Score correctness, completeness, reasoning quality, and step efficiency on the 1-5 rubric. Compare against expected outcome.
+  expected_output: Quality scores with detailed explanations.
+```
+
+When CrewAI runs the task, it expands this description with the actual input data (trace, expected outcome, final answer, etc.).
+
+### 4. Full Assembled Prompt the LLM Actually Sees
+
+Here is the **exact prompt** the Quality Judge receives at runtime:
+
+**System Prompt:**
+```
+You are a Quality & Correctness Judge. 
+Your goal is to score correctness, completeness, reasoning quality, and step efficiency using the 1-5 rubric. 
+You are an extremely strict but fair judge of output quality.
+```
+
+**User Prompt:**
+```
+Score the following agent workflow execution for correctness, completeness, reasoning quality, and step efficiency on a 1-5 scale.
+
+Test Case ID: TC-001
+Expected Outcome: Paris is the capital of France.
+
+Final Answer Provided: Paris is the capital of France and has approximately 2.1 million residents in the city proper.
+
+Full Execution Trace:
+{... full trace JSON ...}
+
+Provide your scores in this exact JSON format:
+{
+  "correctness": 5,
+  "completeness": 4,
+  "reasoning_quality": 5,
+  "step_efficiency": 4,
+  "hallucination_rate": 0.1,
+  "explanation": "Detailed reasoning for each score..."
+}
+```
+
+### 5. The 1–5 Scoring Rubric (Enforced by the Prompt)
+
+The judge is instructed (via the goal and description) to use this rubric:
+
+| Score | Meaning                  | Description |
+|-------|--------------------------|-----------|
+| 5     | Excellent                | Perfect, complete, highly logical, no issues |
+| 4     | Good                     | Minor issues, mostly solid |
+| 3     | Acceptable               | Average, some flaws but functional |
+| 2     | Poor                     | Significant problems |
+| 1     | Very Poor                | Major failures in reasoning or output |
+
+### 6. What the Quality Judge Contributes to the Final Metrics
+
+Its scores are fed into **`MetricCalculatorTool`**, which converts them into the final metrics:
+
+- `reasoning_quality`
+- `step_efficiency`
+- `hallucination_rate` (derived from correctness + length heuristic)
+- Part of the overall `failure_mode` decision
+
+### 7. How to Customize the Quality Judge Prompts
+
+**Option A – Quick edit (recommended)**
+Edit `config/tasks.yaml` → `judge_quality` description to add more criteria.
+
+**Option B – Add new scoring dimensions**
+Add fields like `agent_collaboration_score` or `creativity` in the task description and update `MetricCalculatorTool` accordingly.
+
+**Option C – Make it stricter**
+Change the backstory to:  
+> "You are an extremely strict, zero-tolerance judge who penalizes any unnecessary steps or vague reasoning."
+
 # 1. Clone / create the project
 mkdir agent-evaluator-crew && cd agent-evaluator-crew
 
